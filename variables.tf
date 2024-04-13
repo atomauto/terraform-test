@@ -10,6 +10,7 @@ variable "secret_key" {
 
 variable "project_name" {
   description = "Project name in sbercloud to deploy"
+  default = "test"
 }
 
 variable "name" {
