@@ -9,13 +9,11 @@ NOMAD_TOKEN=$(curl -s --header "Authorization: Bearer ${CONSUL_BOOTSTRAP_TOKEN}"
 
 # Save token to file if file doesn't already exist
 if [ ! -f $NOMAD_USER_TOKEN_FILENAME ]; then
-    # shellcheck disable=SC2086
     echo $NOMAD_TOKEN > $NOMAD_USER_TOKEN_FILENAME
 
     # Check length of token to see if retrieval worked before deleting from KV
     if [ ${#NOMAD_TOKEN} -eq 36 ]; then
         # Delete nomad user token from consul kv
-        # shellcheck disable=SC2034
         DELETE_TOKEN=$(curl -s -X DELETE --header "Authorization: Bearer ${CONSUL_BOOTSTRAP_TOKEN}" "${LB_ADDRESS}:8500/v1/kv/nomad_user_token")
 
         echo -e "\nThe Nomad user token has been saved locally to $NOMAD_USER_TOKEN_FILENAME and deleted from the Consul KV store."

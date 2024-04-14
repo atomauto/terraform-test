@@ -1,24 +1,26 @@
+variable "access_key" {
+  description = "Access key for sbercloud"
+  sensitive = true
+}
+
+variable "secret_key" {
+  description = "Secret key for sbercloud"
+  sensitive = true
+}
+
+variable "project_name" {
+  description = "Project name in sbercloud to deploy"
+  default = "test"
+}
+
 variable "name" {
   description = "Prefix used to name various infrastructure components. Alphanumeric characters only."
   default     = "nomad"
 }
 
-variable "region" {
-  description = "The AWS region to deploy to."
-}
-
-variable "ami" {
-  description = "The AMI to use for the server and client machines. Output from the Packer build process."
-}
-
-variable "key_name" {
-  description = "The name of the AWS SSH key to be loaded on the instance at provisioning."
-}
-
 variable "retry_join" {
   description = "Used by Consul to automatically form a cluster."
   type        = string
-  default     = "provider=aws tag_key=ConsulAutoJoin tag_value=auto-join"
 }
 
 variable "allowlist_ip" {
@@ -27,13 +29,13 @@ variable "allowlist_ip" {
 }
 
 variable "server_instance_type" {
-  description = "The AWS instance type to use for servers."
-  default     = "t2.micro"
+  description = "The compute engine instance type to use for servers."
+  default     = ""
 }
 
 variable "client_instance_type" {
-  description = "The AWS instance type to use for clients."
-  default     = "t2.micro"
+  description = "The compute engine instance type to use for clients."
+  default     = ""
 }
 
 variable "server_count" {
@@ -48,7 +50,7 @@ variable "client_count" {
 
 variable "root_block_device_size" {
   description = "The volume size of the root block device."
-  default     = 16
+  default     = 20
 }
 
 variable "nomad_consul_token_id" {

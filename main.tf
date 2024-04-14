@@ -1,80 +1,254 @@
-terraform {
-  backend "pg" {}
-  required_providers {
-    sbercloud = {
-      source  = "tf.repo.sbc.space/sbercloud-terraform/sbercloud" # Initialize Cloud.ru provider
-      }
+provider "aws" {
+  region = var.region
+}
+
+data "aws_vpc" "default" {
+  default = true
+}
+
+resource "aws_security_group" "consul_nomad_ui_ingress" {
+  name   = "${var.name}-ui-ingress"
+  vpc_id = data.aws_vpc.default.id
+
+  # Nomad
+  ingress {
+    from_port       = 4646
+    to_port         = 4646
+    protocol        = "tcp"
+    cidr_blocks     = [var.allowlist_ip]
+  }
+
+  # Consul
+  ingress {
+    from_port       = 8500
+    to_port         = 8500
+    protocol        = "tcp"
+    cidr_blocks     = [var.allowlist_ip]
+  }
+
+  ingress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
-provider "sbercloud" {
-  auth_url = "https://iam.ru-moscow-1.hc.sbercloud.ru/v3" 
-  region   = "ru-moscow-1"
-  project_name = var.project_name
-  access_key = var.access_key
-  secret_key = var.secret_key
+resource "aws_security_group" "ssh_ingress" {
+  name   = "${var.name}-ssh-ingress"
+  vpc_id = data.aws_vpc.default.id
+
+  # SSH
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.allowlist_ip]
+  }
+
+  ingress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-data "sbercloud_availability_zones" "AZ" {}
+resource "aws_security_group" "allow_all_internal" {
+  name   = "${var.name}-allow-all-internal"
+  vpc_id = data.aws_vpc.default.id
 
-resource "sbercloud_networking_secgroup" "default" {
-  name                 = "${var.project_name}-default"
-  delete_default_rules = true
+  ingress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-resource "sbercloud_networking_secgroup_rule" "out_v4_all" {
-  direction         = "egress"
-  ethertype         = "IPv4"
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = sbercloud_networking_secgroup.default.id
-}
-
-resource "sbercloud_networking_secgroup_rule" "ingress_ssh_all" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 22
-  port_range_max    = 22
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = sbercloud_networking_secgroup.default.id
-}
-
-resource "sbercloud_networking_secgroup" "nomad_clients_ingress" {
+resource "aws_security_group" "clients_ingress" {
   name   = "${var.name}-clients-ingress"
-  description = "Consul nomad UI security group"
+  vpc_id = data.aws_vpc.default.id
+
+  ingress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Add application ingress rules here
+  # These rules are applied only to the client nodes
+
+  # nginx example
+  # ingress {
+  #   from_port   = 80
+  #   to_port     = 80
+  #   protocol    = "tcp"
+  #   cidr_blocks = ["0.0.0.0/0"]
+  # }
 }
 
-resource "sbercloud_networking_secgroup_rule" "nomad_clients_ingress_rule_80" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 80
-  port_range_max    = 80
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = sbercloud_networking_secgroup.nomad_clients_ingress.id
+resource "aws_instance" "server" {
+  ami                    = var.ami
+  instance_type          = var.server_instance_type
+  key_name               = var.key_name
+  vpc_security_group_ids = [aws_security_group.consul_nomad_ui_ingress.id, aws_security_group.ssh_ingress.id, aws_security_group.allow_all_internal.id]
+  count                  = var.server_count
+
+  # instance tags
+  # ConsulAutoJoin is necessary for nodes to automatically join the cluster
+  tags = merge(
+    {
+      "Name" = "${var.name}-server-${count.index}"
+    },
+    {
+      "ConsulAutoJoin" = "auto-join"
+    },
+    {
+      "NomadType" = "server"
+    }
+  )
+
+  root_block_device {
+    volume_type           = "gp2"
+    volume_size           = var.root_block_device_size
+    delete_on_termination = "true"
+  }
+
+  user_data = templatefile("${path.module}/../shared/data-scripts/user-data-server.sh", {
+    server_count              = var.server_count
+    region                    = var.region
+    cloud_env                 = "aws"
+    retry_join                = var.retry_join
+    nomad_binary              = var.nomad_binary
+    nomad_consul_token_id     = var.nomad_consul_token_id
+    nomad_consul_token_secret = var.nomad_consul_token_secret
+  })
+  iam_instance_profile = aws_iam_instance_profile.instance_profile.name
+
+  metadata_options {
+    http_endpoint          = "enabled"
+    instance_metadata_tags = "enabled"
+  }
 }
 
-resource "sbercloud_networking_secgroup" "consul_nomad_ui_ingress" {
-  name   = "${var.name}-ui-ingress"
-  description = "Consul nomad UI security group"
+resource "aws_instance" "client" {
+  ami                    = var.ami
+  instance_type          = var.client_instance_type
+  key_name               = var.key_name
+  vpc_security_group_ids = [aws_security_group.consul_nomad_ui_ingress.id, aws_security_group.ssh_ingress.id, aws_security_group.clients_ingress.id, aws_security_group.allow_all_internal.id]
+  count                  = var.client_count
+  depends_on             = [aws_instance.server]
+
+  # instance tags
+  # ConsulAutoJoin is necessary for nodes to automatically join the cluster
+  tags = merge(
+    {
+      "Name" = "${var.name}-client-${count.index}"
+    },
+    {
+      "ConsulAutoJoin" = "auto-join"
+    },
+    {
+      "NomadType" = "client"
+    }
+  )
+
+  root_block_device {
+    volume_type           = "gp2"
+    volume_size           = var.root_block_device_size
+    delete_on_termination = "true"
+  }
+
+  ebs_block_device {
+    device_name           = "/dev/xvdd"
+    volume_type           = "gp2"
+    volume_size           = "50"
+    delete_on_termination = "true"
+  }
+
+  user_data = templatefile("${path.module}/../shared/data-scripts/user-data-client.sh", {
+    region                    = var.region
+    cloud_env                 = "aws"
+    retry_join                = var.retry_join
+    nomad_binary              = var.nomad_binary
+    nomad_consul_token_secret = var.nomad_consul_token_secret
+  })
+  iam_instance_profile = aws_iam_instance_profile.instance_profile.name
+
+  metadata_options {
+    http_endpoint          = "enabled"
+    instance_metadata_tags = "enabled"
+  }
 }
 
-resource "sbercloud_networking_secgroup_rule" "consul_nomad_ui_ingress_rule_4646" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 4646
-  port_range_max    = 4646
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = sbercloud_networking_secgroup.consul_nomad_ui_ingress.id
+resource "aws_iam_instance_profile" "instance_profile" {
+  name_prefix = var.name
+  role        = aws_iam_role.instance_role.name
 }
 
-resource "sbercloud_networking_secgroup_rule" "consul_nomad_ui_ingress_rule_8500" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 8500
-  port_range_max    = 8500
-  remote_ip_prefix  = "0.0.0.0/0"
-  security_group_id = sbercloud_networking_secgroup.consul_nomad_ui_ingress.id
+resource "aws_iam_role" "instance_role" {
+  name_prefix        = var.name
+  assume_role_policy = data.aws_iam_policy_document.instance_role.json
+}
+
+data "aws_iam_policy_document" "instance_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "auto_discover_cluster" {
+  name   = "${var.name}-auto-discover-cluster"
+  role   = aws_iam_role.instance_role.id
+  policy = data.aws_iam_policy_document.auto_discover_cluster.json
+}
+
+data "aws_iam_policy_document" "auto_discover_cluster" {
+  statement {
+    effect = "Allow"
+
+    actions = [
+      "ec2:DescribeInstances",
+      "ec2:DescribeTags",
+      "autoscaling:DescribeAutoScalingGroups",
+    ]
+
+    resources = ["*"]
+  }
 }
